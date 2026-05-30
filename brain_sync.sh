@@ -41,9 +41,9 @@ done
 log "Merge tamamlandı: $MERGED"
 
 # --- WINDOWS'A GONDER ---
-WIN_IP="100.95.19.33"
-WIN_DIR="C:/asuli-core"
-WIN_USER="ali"
+WIN_IP="${WIN_IP:-YOUR_WINDOWS_TAILSCALE_IP}"
+WIN_DIR="${WIN_DIR:-C:/asuli-core}"
+WIN_USER="${WIN_USER:-YOUR_USERNAME}"
 
 # asuli-core dizini yoksa oluştur
 ssh "$WIN_USER@$WIN_IP" "mkdir -p '$WIN_DIR'" 2>/dev/null
