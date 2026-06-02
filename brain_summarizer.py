@@ -142,5 +142,33 @@ def main():
     out             = write_and_send(args.date, executive, chunk_summaries)
     log(f"=== Tamamlandı → {out} ===")
 
+    # Telegram bildirimi
+    send_telegram(
+        f"✅ *Brain Summary Hazır*\n"
+        f"📅 Tarih: {args.date}\n"
+        f"📁 `brain_summary_{args.date}.md`\n"
+        f"📍 C:\\asuli-core\\\n"
+        f"👉 AEIN projesine yükle"
+    )
+
+
+
+
+def send_telegram(msg):
+    token   = os.environ.get("TG_TOKEN")
+    chat_id = os.environ.get("TG_CHAT_ID")
+    if not token or not chat_id:
+        log("UYARI: TG_TOKEN veya TG_CHAT_ID eksik")
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+            timeout=10
+        )
+        log("Telegram bildirimi gönderildi")
+    except Exception as e:
+        log(f"Telegram HATA: {e}")
+
 if __name__ == "__main__":
     main()
