@@ -70,13 +70,15 @@ def summarize_chunk(idx, total, chunk):
 
 {chunk}
 
-Kurallar:
+KURALLAR (kesinlikle uy):
+- Yanıtını YALNIZCA TÜRKÇE yaz. Başka dil kullanma.
 - Maksimum 15 madde
 - Sadece önemli kararlar, kurulumlar, değişiklikler
 - Her madde tek cümle, net
 - Gereksiz tekrar yok
+- Kod bloğu, tablo veya başlık kullanma
 
-Özet:"""
+Türkçe Özet:"""
     result = call_ollama(prompt)
     log(f"[{idx}/{total}] Tamamlandı")
     return result
@@ -89,6 +91,11 @@ Bunlardan tek sayfalık executive summary oluştur.
 
 {combined}
 
+KURALLAR (kesinlikle uy):
+- Yanıtını YALNIZCA TÜRKÇE yaz. Başka dil kullanma.
+- Kod bloğu, tablo veya markdown başlık kullanma
+- Sadece düz madde listesi
+
 Format:
 ## Bugün Ne Yapıldı
 - (max 7 madde)
@@ -100,9 +107,7 @@ Format:
 - (max 5 madde)
 
 ## Sonraki Adımlar
-- (max 5 madde)
-
-Türkçe, kısa, net."""
+- (max 5 madde)"""
     return call_ollama(prompt)
 
 def write_and_send(date_str, executive, chunk_summaries):
