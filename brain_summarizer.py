@@ -1,179 +1,147 @@
 #!/usr/bin/env python3
-"""
-brain_summarizer.py v2
-Dosyayı 10 eşit parçaya böler, her biri için 1 Ollama çağrısı yapar.
-Toplam 11 çağrı → 10-15 dakikada biter.
-"""
-
-import requests
-import subprocess
-import sys
-import os
-import argparse
+import sys, re, subprocess, requests, os
 from datetime import datetime
 
 OLLAMA_API = "http://100.95.19.33:11434/api/generate"
-MODEL      = "qwen3:30b-instruct"
-WIN_USER   = os.environ.get("WIN_USER", "ali")
-WIN_IP     = os.environ.get("WIN_IP", "100.95.19.33")
-WIN_DIR    = os.environ.get("WIN_DIR", "C:/asuli-core")
-NUM_CHUNKS = 10
-TIMEOUT    = 300
+MODEL = "qwen3:30b-instruct"
+WIN_USER = "ali"
+WIN_IP = "100.95.19.33"
+WIN_DIR = "C:/asuli-core"
+TG_TOKEN = os.environ.get("TG_TOKEN", "")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 
-def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+def log(msg): print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def read_brain_file(date_str):
-    remote_path = f"{WIN_USER}@{WIN_IP}:{WIN_DIR}/brain_{date_str}.md"
-    local_path  = f"/tmp/brain_{date_str}.md"
-    log(f"Windows'tan çekiliyor: brain_{date_str}.md")
-    result = subprocess.run(["scp", remote_path, local_path], capture_output=True, text=True)
-    if result.returncode != 0:
-        log(f"HATA: {result.stderr.strip()}")
-        sys.exit(1)
-    with open(local_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    log(f"Okundu: {len(content):,} karakter / {content.count(chr(10)):,} satır")
-    return content
+def get_date():
+    for i, arg in enumerate(sys.argv):
+        if arg == "--date" and i+1 < len(sys.argv):
+            return sys.argv[i+1]
+    return datetime.now().strftime("%Y-%m-%d")
 
-def split_equal(content, n):
-    lines = content.splitlines()
-    chunk_size = max(1, len(lines) // n)
-    chunks = []
-    for i in range(n):
-        start = i * chunk_size
-        end   = start + chunk_size if i < n - 1 else len(lines)
-        chunk = "\n".join(lines[start:end])
-        if chunk.strip():
-            chunks.append(chunk)
-    log(f"Dosya {len(chunks)} parçaya bölündü (~{chunk_size} satır/parça)")
-    return chunks
+def ollama(prompt):
+    r = requests.post(OLLAMA_API, json={
+        "model": MODEL, "prompt": prompt, "stream": False,
+        "options": {"temperature": 0.3, "num_predict": 2048}
+    }, timeout=300)
+    return r.json()["response"].strip()
 
-def call_ollama(prompt):
-    try:
-        resp = requests.post(
-            OLLAMA_API,
-            json={"model": MODEL, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.2, "num_predict": 800}},
-            timeout=TIMEOUT
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-    except requests.exceptions.Timeout:
-        return "[TIMEOUT]"
-    except Exception as e:
-        return f"[HATA: {e}]"
+def send_telegram(msg):
+    if TG_TOKEN and TG_CHAT_ID:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                      json={"chat_id": TG_CHAT_ID, "text": msg})
 
-def summarize_chunk(idx, total, chunk):
-    log(f"[{idx}/{total}] Özetleniyor... ({len(chunk):,} karakter)")
-    prompt = f"""Aşağıdaki teknik çalışma notunu Türkçe olarak özetle.
+def detect_project(filename):
+    f = filename.lower()
+    if any(x in f for x in ["aein", "ali_reset", "private"]): return "AEIN / Kariyer"
+    if any(x in f for x in ["asuli", "roadmap", "changelog", "pdf_pilot"]): return "Asuli"
+    if any(x in f for x in ["medium", "medium_brain"]): return "Medium"
+    if any(x in f for x in ["reels", "fb.brain", "reel"]): return "Reels Pipeline"
+    if any(x in f for x in ["telegram", "tbrain"]): return "Telegram Bot"
+    if "morning" in f: return "Morning Briefing"
+    if any(x in f for x in ["brainos", "brain_sync"]): return "BrainOS Tools"
+    return "Genel"
 
-{chunk}
+date_str = get_date()
+log(f"=== Brain Summarizer v3 — {date_str} ===")
+log(f"Model: {MODEL} | Dosya bazlı özetleme")
 
-KURALLAR (kesinlikle uy):
-- Yanıtını YALNIZCA TÜRKÇE yaz. Başka dil kullanma.
-- Maksimum 15 madde
+# Windows'tan çek
+remote_file = f"{WIN_DIR}/brain_{date_str}.md"
+local_file = f"/tmp/brain_{date_str}.md"
+r = subprocess.run(["scp", f"{WIN_USER}@{WIN_IP}:{remote_file}", local_file], capture_output=True)
+if r.returncode != 0:
+    log(f"HATA: {r.stderr.decode()}"); sys.exit(1)
+
+with open(local_file, "r", encoding="utf-8") as f:
+    content = f.read()
+log(f"Okundu: {len(content):,} karakter")
+
+# Dosya bölümlerine ayır
+sections = []
+parts = re.split(r'\n---\n## ', content)
+for part in parts[1:]:
+    lines = part.split('\n', 1)
+    filename = lines[0].strip()
+    body = lines[1].strip() if len(lines) > 1 else ""
+    if len(body) > 100:
+        sections.append((filename, body))
+log(f"{len(sections)} dosya bölümü bulundu")
+
+# Her dosyayı ayrı özetle
+file_summaries = []
+for i, (filename, body) in enumerate(sections, 1):
+    project = detect_project(filename)
+    log(f"[{i}/{len(sections)}] [{project}] {filename} ({len(body):,} karakter)")
+    prompt = f"""Sen bir teknik proje asistanısın. Aşağıdaki proje notunu okuyan kıdemli bir mühendis gibi özetle.
+
+Dosya: {filename}
+Proje: {project}
+
+---
+{body[:8000]}
+---
+
+KURALLAR:
+- YALNIZCA TÜRKÇE yaz, başka dil kullanma
+- Maksimum 8 madde
 - Sadece önemli kararlar, kurulumlar, değişiklikler
-- Her madde tek cümle, net
-- Gereksiz tekrar yok
-- Kod bloğu, tablo veya başlık kullanma
+- Her madde tek cümle, net ve özlü
+- Kod bloğu, tablo, markdown başlık kullanma
+- Düz madde listesi
 
 Türkçe Özet:"""
-    result = call_ollama(prompt)
-    log(f"[{idx}/{total}] Tamamlandı")
-    return result
+    summary = ollama(prompt)
+    file_summaries.append((project, filename, summary))
+    log(f"[{i}/{len(sections)}] Tamamlandı")
 
-def build_executive_summary(chunk_summaries, date_str):
-    log("Executive summary oluşturuluyor...")
-    combined = "\n\n".join([f"[Parça {i+1}]\n{s}" for i, s in enumerate(chunk_summaries)])
-    prompt = f"""{date_str} tarihli çalışma notlarının parça özetleri aşağıda.
-Bunlardan tek sayfalık executive summary oluştur.
+# Proje bazlı gruplama
+log("Executive summary oluşturuluyor...")
+project_groups = {}
+for project, filename, summary in file_summaries:
+    project_groups.setdefault(project, []).append(f"[{filename}]\n{summary}")
 
-{combined}
+grouped_text = ""
+for project, summaries in project_groups.items():
+    grouped_text += f"\n### {project}\n" + "\n".join(summaries) + "\n"
 
-KURALLAR (kesinlikle uy):
-- Yanıtını YALNIZCA TÜRKÇE yaz. Başka dil kullanma.
-- Kod bloğu, tablo veya markdown başlık kullanma
+exec_prompt = f"""{date_str} tarihli proje notlarının özeti aşağıda, proje bazlı gruplandırılmış.
+Her proje için kısa, net executive summary oluştur.
+
+{grouped_text[:12000]}
+
+KURALLAR:
+- YALNIZCA TÜRKÇE yaz
+- Her proje başlığını koru
+- Her proje altında maksimum 5 madde
+- Kod bloğu, tablo kullanma
 - Sadece düz madde listesi
 
 Format:
-## Bugün Ne Yapıldı
-- (max 7 madde)
+## [Proje Adı]
+- madde
+- madde"""
 
-## Alınan Kararlar
-- (max 5 madde)
+exec_summary = ollama(exec_prompt)
 
-## Kurulan / Değişen Sistemler
-- (max 5 madde)
+# Dosyaya yaz
+output_file = f"/tmp/brain_summary_{date_str}.md"
+with open(output_file, "w", encoding="utf-8") as f:
+    f.write(f"# Brain Summary — {date_str}\n")
+    f.write(f"_Model: {MODEL} | {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n---\n\n")
+    f.write(exec_summary)
+    f.write("\n\n---\n\n## Dosya Özetleri\n\n")
+    for project, filename, summary in file_summaries:
+        f.write(f"### [{project}] {filename}\n{summary}\n\n")
 
-## Sonraki Adımlar
-- (max 5 madde)"""
-    return call_ollama(prompt)
+size_kb = os.path.getsize(output_file) // 1024
+log(f"Özet yazıldı: {size_kb} KB")
 
-def write_and_send(date_str, executive, chunk_summaries):
-    local_path  = f"/tmp/brain_summary_{date_str}.md"
-    remote_path = f"{WIN_USER}@{WIN_IP}:{WIN_DIR}/brain_summary_{date_str}.md"
-    lines = [
-        f"# Brain Summary — {date_str}",
-        f"_Model: {MODEL} | {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
-        "", "---", "", executive, "", "---", "", "## Parça Özetleri", ""
-    ]
-    for i, s in enumerate(chunk_summaries, 1):
-        lines.append(f"### Parça {i}")
-        lines.append(s)
-        lines.append("")
-    with open(local_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    size_kb = os.path.getsize(local_path) // 1024
-    log(f"Özet yazıldı: {size_kb} KB")
-    result = subprocess.run(["scp", local_path, remote_path], capture_output=True, text=True)
-    if result.returncode == 0:
-        log(f"Windows'a gönderildi: brain_summary_{date_str}.md")
-    else:
-        log(f"UYARI: Windows'a gönderilemedi — {result.stderr.strip()}")
-    return local_path
+r = subprocess.run(["scp", output_file, f"{WIN_USER}@{WIN_IP}:{WIN_DIR}/"], capture_output=True)
+if r.returncode == 0:
+    log(f"Windows'a gönderildi: brain_summary_{date_str}.md")
+else:
+    log("HATA: Windows'a gönderilemedi")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
-    parser.add_argument("--chunks", type=int, default=NUM_CHUNKS)
-    args = parser.parse_args()
-    log(f"=== Brain Summarizer v2 — {args.date} ===")
-    log(f"Model: {MODEL} | Parça sayısı: {args.chunks}")
-    content         = read_brain_file(args.date)
-    chunks          = split_equal(content, args.chunks)
-    chunk_summaries = [summarize_chunk(i+1, len(chunks), c) for i, c in enumerate(chunks)]
-    executive       = build_executive_summary(chunk_summaries, args.date)
-    out             = write_and_send(args.date, executive, chunk_summaries)
-    log(f"=== Tamamlandı → {out} ===")
-
-    # Telegram bildirimi
-    send_telegram(
-        f"✅ *Brain Summary Hazır*\n"
-        f"📅 Tarih: {args.date}\n"
-        f"📁 `brain_summary_{args.date}.md`\n"
-        f"📍 C:\\asuli-core\\\n"
-        f"👉 AEIN projesine yükle"
-    )
-
-
-
-
-def send_telegram(msg):
-    token   = os.environ.get("TG_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
-    if not token or not chat_id:
-        log("UYARI: TG_TOKEN veya TG_CHAT_ID eksik")
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
-            timeout=10
-        )
-        log("Telegram bildirimi gönderildi")
-    except Exception as e:
-        log(f"Telegram HATA: {e}")
-
-if __name__ == "__main__":
-    main()
+log(f"=== Tamamlandı → {output_file} ===")
+send_telegram(f"✅ Brain Summary Hazır\n📅 Tarih: {date_str}\n📁 brain_summary_{date_str}.md\n📍 C:\\asuli-core\\\n👉 AEIN projesine yükle")
+log("Telegram bildirimi gönderildi")
